@@ -1,0 +1,166 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+# Only one release at a time
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  # Create the GitHub release first, so build jobs don't race to create it
+  create-release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Get version
+        id: version
+        run: |
+          VERSION="${GITHUB_REF_NAME}"
+          VERSION_NUM="${VERSION#v}"
+          echo "tag=${VERSION}" >> $GITHUB_OUTPUT
+          echo "number=${VERSION_NUM}" >> $GITHUB_OUTPUT
+          echo "Using version: ${VERSION}"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          name: Blogs Are Back — Desktop ${{ steps.version.outputs.tag }}
+          body: |
+            ## Downloads
+
+            | Platform | File | Notes |
+            |----------|------|-------|
+            | **macOS** | `Blogs-Are-Back-v${{ steps.version.outputs.number }}-universal.dmg` | Intel + Apple Silicon |
+            | **Windows** | `Blogs-Are-Back-v${{ steps.version.outputs.number }}-x64.exe` | Run the installer |
+            | **Linux** | `Blogs-Are-Back-v${{ steps.version.outputs.number }}-x86_64.AppImage` | `chmod +x` and run |
+            | **Linux (deb)** | `Blogs-Are-Back-v${{ steps.version.outputs.number }}-amd64.deb` | `sudo dpkg -i *.deb` |
+          draft: true
+          generate_release_notes: true
+
+  build:
+    needs: create-release
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            platform: mac
+          - os: windows-latest
+            platform: win
+          - os: ubuntu-latest
+            platform: linux
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - run: npm run build
+
+      # Upload Sentry source maps (once, from Linux runner only)
+      - name: Upload Sentry source maps
+        if: matrix.platform == 'linux'
+        env:
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+        run: |
+          if [ -z "$SENTRY_AUTH_TOKEN" ]; then echo "No SENTRY_AUTH_TOKEN, skipping"; exit 0; fi
+          VERSION=$(node -p "require('./package.json').version")
+          npx sentry-cli sourcemaps inject ./dist
+          npx sentry-cli sourcemaps upload --release=blogsareback@$VERSION ./dist
+
+      # macOS: code signing & notarization
+      - name: Build & publish (macOS)
+        if: matrix.platform == 'mac'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CSC_LINK: ${{ secrets.MAC_CERTIFICATE }}
+          CSC_KEY_PASSWORD: ${{ secrets.MAC_CERTIFICATE_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: npx electron-builder --mac --publish always
+
+      # Windows
+      - name: Build & publish (Windows)
+        if: matrix.platform == 'win'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: npx electron-builder --win --publish always
+
+      # Linux
+      - name: Build & publish (Linux)
+        if: matrix.platform == 'linux'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: npx electron-builder --linux --publish always
+
+  # Publish the draft release once all builds have uploaded their artifacts
+  publish-release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release edit ${{ github.ref_name }} --draft=false
+
+  # Update Homebrew cask in the tap repo
+  update-homebrew:
+    needs: publish-release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Get version
+        id: version
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          echo "number=${VERSION}" >> $GITHUB_OUTPUT
+
+      - name: Download DMG and compute SHA256
+        id: sha
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          DMG_NAME="Blogs-Are-Back-v${{ steps.version.outputs.number }}-universal.dmg"
+          gh release download "${{ github.ref_name }}" \
+            --repo "${{ github.repository }}" \
+            --pattern "$DMG_NAME" \
+            --dir .
+          SHA=$(sha256sum "$DMG_NAME" | cut -d ' ' -f 1)
+          echo "sha256=${SHA}" >> $GITHUB_OUTPUT
+
+      - name: Update cask in tap repo
+        env:
+          TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          VERSION="${{ steps.version.outputs.number }}"
+          SHA="${{ steps.sha.outputs.sha256 }}"
+
+          git clone "https://x-access-token:${TAP_TOKEN}@github.com/blogsareback/homebrew-desktop.git" tap
+          cd tap
+
+          # Update version and sha256 in the cask file
+          sed -i "s/version \".*\"/version \"${VERSION}\"/" Casks/blogsareback.rb
+          sed -i "s/sha256 \".*\"/sha256 \"${SHA}\"/" Casks/blogsareback.rb
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Casks/blogsareback.rb
+          git commit -m "Update blogsareback to v${VERSION}"
+          git push
