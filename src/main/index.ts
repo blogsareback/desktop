@@ -127,7 +127,8 @@ function createWindow(): void {
 
   // Inject release channel badge (ALPHA/BETA/DEV ribbon)
   const channel = getReleaseChannel()
-  if (channel && getDesktopSettings().showReleaseBadge) {
+  if (channel) {
+    const showBadge = getDesktopSettings().showReleaseBadge
     const badgeCSS = `
       #bab-release-badge {
         position: fixed;
@@ -149,6 +150,7 @@ function createWindow(): void {
         pointer-events: none;
         opacity: 0.85;
         user-select: none;
+        display: ${showBadge ? 'block' : 'none'};
       }
     `
     const badgeJS = `

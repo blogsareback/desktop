@@ -82,14 +82,16 @@ export function createTray(window: BrowserWindow): Tray {
   tray.setToolTip('Blogs Are Back')
   tray.setContextMenu(buildContextMenu())
 
-  tray.on('click', () => {
-    if (mainWindow?.isVisible()) {
-      mainWindow.hide()
-    } else {
-      mainWindow?.show()
-      mainWindow?.focus()
-    }
-  })
+  if (!isMac) {
+    tray.on('click', () => {
+      if (mainWindow?.isVisible()) {
+        mainWindow.hide()
+      } else {
+        mainWindow?.show()
+        mainWindow?.focus()
+      }
+    })
+  }
 
   return tray
 }

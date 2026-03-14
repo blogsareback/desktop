@@ -20,7 +20,7 @@ export const DEFAULT_SETTINGS: DesktopSettings = {
   backgroundUpdatesEnabled: true,
   minimizeToTray: true,
   autoUpdatesEnabled: true,
-  monochromeMenuBarIcon: false,
+  monochromeMenuBarIcon: process.platform === 'darwin',
   launchAtLogin: false,
   startMinimized: false,
   showReleaseBadge: true,

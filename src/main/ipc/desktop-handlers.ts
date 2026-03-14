@@ -1,6 +1,7 @@
 import * as fs from 'fs'
 import * as path from 'path'
 import { app, BrowserWindow, Notification } from 'electron'
+import { getReleaseChannel } from '../release-channel'
 import { getDesktopSettings, setDesktopSettings, type DesktopSettings } from '../desktop-settings'
 import { getNetworkStatus } from '../network-status'
 import { checkForUpdates, installUpdate } from '../auto-updater'
@@ -92,6 +93,21 @@ export const desktopHandlers: HandlerMap = {
     }
     if (prev.launchAtLogin !== updated.launchAtLogin) {
       app.setLoginItemSettings({ openAtLogin: updated.launchAtLogin })
+    }
+    if (prev.showReleaseBadge !== updated.showReleaseBadge && getReleaseChannel()) {
+      const win = BrowserWindow.getAllWindows()[0]
+      if (win) {
+        const js = updated.showReleaseBadge
+          ? `{
+              const el = document.getElementById('bab-release-badge');
+              if (el) el.style.display = '';
+            }`
+          : `{
+              const el = document.getElementById('bab-release-badge');
+              if (el) el.style.display = 'none';
+            }`
+        win.webContents.executeJavaScript(js).catch(() => {})
+      }
     }
 
     return success(message.requestId, 'DESKTOP_SETTINGS_RESPONSE', updated)
